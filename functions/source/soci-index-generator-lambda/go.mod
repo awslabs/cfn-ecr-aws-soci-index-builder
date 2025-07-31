@@ -6,7 +6,7 @@ toolchain go1.23.7
 
 require (
 	github.com/aws/aws-lambda-go v1.49.0
-	github.com/aws/aws-sdk-go v1.55.7
+	github.com/aws/aws-sdk-go v1.55.8
 	github.com/awslabs/soci-snapshotter v0.11.1
 	github.com/containerd/containerd v1.7.27
 	github.com/opencontainers/image-spec v1.1.1
