@@ -910,6 +910,7 @@ p.footer-text a{color:#d7d8d8}
 </ul>
 </li>
 <li><a href="#_cleanup">Cleanup</a></li>
+<li><a href="#_migrating_from_archived_partners_solution_to_latest">Migrating from Archived Partners Solution to Latest</a></li>
 <li><a href="#_troubleshooting">Troubleshooting</a></li>
 <li><a href="#_resources">Resources</a></li>
 <li><a href="#_customer_responsibility">Customer responsibility</a></li>
@@ -1505,6 +1506,142 @@ If you used automatic deployment and customized the stack_name field in your .ta
 <p>In the Amazon ECR console, delete the SOCI index artifacts. You can also use the <a href="https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_BatchDeleteImage.html" target="_blank" rel="noopener">BatchDeleteImage</a> API to delete the artifacts.</p>
 </li>
 </ol>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_migrating_from_archived_partners_solution_to_latest">Migrating from Archived Partners Solution to Latest</h2>
+<div class="sectionbody">
+<div class="admonitionblock important">
+<table>
+<tr>
+<td class="icon">
+<i class="fa icon-important" title="Important"></i>
+</td>
+<td class="content">
+The previous AWS Partners Solution for SOCI Index Builder has been archived and is no longer maintained. The service-managed S3 buckets containing the CloudFormation templates are no longer available, and no further updates or patches will be provided for the legacy solution.
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>If you previously deployed the SOCI Index Builder using the archived Partners Solution, you must migrate to this new self-service model to continue receiving updates and to access new features, including support for SOCI Index version 2.</p>
+</div>
+<div class="paragraph">
+<p><strong>Key Differences Between Legacy and Current Solutions</strong></p>
+</div>
+<table class="tableblock frame-all grid-all stretch">
+<colgroup>
+<col style="width: 33.3333%;">
+<col style="width: 33.3333%;">
+<col style="width: 33.3334%;">
+</colgroup>
+<thead>
+<tr>
+<th class="tableblock halign-left valign-top">Feature</th>
+<th class="tableblock halign-left valign-top">Archived (Partners Solution)</th>
+<th class="tableblock halign-left valign-top">Latest</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Deployment Model</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Service-managed S3 buckets with pre-built templates</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Self-service: build and upload to your own S3 bucket</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">SOCI Index Support</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Version 1 only</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Version 1 and Version 2</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Maintenance Status</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Archived - no updates or patches</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Actively maintained with regular updates</p></td>
+</tr>
+<tr>
+<td class="tableblock halign-left valign-top"><p class="tableblock">CloudFormation Template Source</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">AWS-managed S3 bucket</p></td>
+<td class="tableblock halign-left valign-top"><p class="tableblock">Customer-managed S3 bucket</p></td>
+</tr>
+</tbody>
+</table>
+<div class="paragraph">
+<p><strong>Migration Steps</strong></p>
+</div>
+<div class="paragraph">
+<p>To migrate from the archived Partners Solution to the current version:</p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p><strong>Remove the existing CloudFormation stack:</strong></p>
+<div class="ulist">
+<ul>
+<li>
+<p>Navigate to the AWS CloudFormation console</p>
+</li>
+<li>
+<p>Select the stack created using the previous Partners Solution</p>
+</li>
+<li>
+<p>Delete the stack and wait for the deletion to complete</p>
+</li>
+<li>
+<p>Follow the cleanup steps in the <a href="#_cleanup"><em>Cleanup</em></a> section to remove any remaining resources</p>
+</li>
+</ul>
+</div>
+</li>
+<li>
+<p><strong>Prepare for new deployment:</strong></p>
+<div class="ulist">
+<ul>
+<li>
+<p>Review the updated requirements in the <a href="#_predeployment_steps"><em>Predeployment Steps</em></a> section</p>
+</li>
+<li>
+<p>Ensure you have an S3 bucket available for uploading CloudFormation resources</p>
+</li>
+<li>
+<p>Verify you have the necessary permissions for the self-service deployment model</p>
+</li>
+</ul>
+</div>
+</li>
+<li>
+<p><strong>Deploy the new solution:</strong></p>
+<div class="ulist">
+<ul>
+<li>
+<p>Follow the complete deployment process outlined in the <a href="#_deployment_steps"><em>Deployment steps</em></a> section</p>
+</li>
+<li>
+<p>Build and upload the CloudFormation resources to your own S3 bucket</p>
+</li>
+<li>
+<p>Create the new CloudFormation stack using your uploaded templates</p>
+</li>
+</ul>
+</div>
+</li>
+<li>
+<p><strong>Verify migration:</strong></p>
+<div class="ulist">
+<ul>
+<li>
+<p>Test the new deployment to ensure SOCI index generation is working correctly</p>
+</li>
+<li>
+<p>Confirm that both SOCI Index version 1 and version 2 are supported (if needed)</p>
+</li>
+</ul>
+</div>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p>For detailed deployment instructions, refer to the <a href="#_predeployment_steps"><em>Predeployment Steps</em></a> and <a href="#_deployment_steps"><em>Deployment steps</em></a> sections of this guide.</p>
 </div>
 </div>
 </div>

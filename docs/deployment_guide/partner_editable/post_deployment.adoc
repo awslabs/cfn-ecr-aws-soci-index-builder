@@ -9,3 +9,59 @@ NOTE: If you used automatic deployment and customized the stack_name field in yo
 1. To remove this solution, delete the Amazon CloudFormation stack created in the *Deployment steps* section.
 2. In the Amazon CloudWatch Logs console, delete the log groups `/aws/lambda/<StackName>-SociIndexGeneratorLambda-<hash>` and `/aws/lambda/<StackName>-ECRImageActionEventFilteringLambda-<hash>` where `<StackName>` is the name of the stack that you entered in the *Deployment steps* section. You can also use the https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_DeleteLogGroup.html[DeleteLogGroup^] API to delete the log groups.
 3. In the Amazon ECR console, delete the SOCI index artifacts. You can also use the https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_BatchDeleteImage.html[BatchDeleteImage^] API to delete the artifacts.
+
+== Migrating from Archived Partners Solution to Latest
+
+IMPORTANT: The previous AWS Partners Solution for SOCI Index Builder has been archived and is no longer maintained. The service-managed S3 buckets containing the CloudFormation templates are no longer available, and no further updates or patches will be provided for the legacy solution.
+
+If you previously deployed the SOCI Index Builder using the archived Partners Solution, you must migrate to this new self-service model to continue receiving updates and to access new features, including support for SOCI Index version 2.
+
+**Key Differences Between Legacy and Current Solutions**
+
+[cols="1,1,1"]
+|===
+|Feature |Archived (Partners Solution)  |Latest
+
+|Deployment Model
+|Service-managed S3 buckets with pre-built templates
+|Self-service: build and upload to your own S3 bucket
+
+|SOCI Index Support
+|Version 1 only
+|Version 1 and Version 2
+
+|Maintenance Status
+|Archived - no updates or patches
+|Actively maintained with regular updates
+
+|CloudFormation Template Source
+|AWS-managed S3 bucket
+|Customer-managed S3 bucket
+|===
+
+**Migration Steps**
+
+To migrate from the archived Partners Solution to the current version:
+
+1. **Remove the existing CloudFormation stack:**
+   - Navigate to the AWS CloudFormation console
+   - Select the stack created using the previous Partners Solution
+   - Delete the stack and wait for the deletion to complete
+   - Follow the cleanup steps in the <<Cleanup>> section to remove any remaining resources
+
+2. **Prepare for new deployment:**
+   - Review the updated requirements in the <<Predeployment Steps>> section
+   - Ensure you have an S3 bucket available for uploading CloudFormation resources
+   - Verify you have the necessary permissions for the self-service deployment model
+
+3. **Deploy the new solution:**
+   - Follow the complete deployment process outlined in the <<Deployment steps>> section
+   - Build and upload the CloudFormation resources to your own S3 bucket
+   - Create the new CloudFormation stack using your uploaded templates
+
+4. **Verify migration:**
+   - Test the new deployment to ensure SOCI index generation is working correctly
+   - Confirm that both SOCI Index version 1 and version 2 are supported (if needed)
+
+
+For detailed deployment instructions, refer to the <<Predeployment Steps>> and <<Deployment steps>> sections of this guide.
