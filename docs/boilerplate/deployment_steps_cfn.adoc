@@ -47,18 +47,16 @@ You can customize the stack name using one of these options:
 * `stack_name_suffix`: Add a suffix to the name
 ====
 
-[IMPORTANT]
-====
+
 While this automatic deployment provides a convenient one-command deployment, it has some limitations:
 
 * The `SociIndexVersion` is set at deployment time and cannot be changed without redeploying the stack
 * The automatic deployment method sets a fixed SociIndexVersion in the taskcat configuration, using the upload command and console deployment approach allows you to specify different SociIndexVersion values each time you create a new stack from the pre-uploaded template
-====
 
 
 === 2. Manual Deployment
 
-[TIP]
+[IMPORTANT]
 ====
 If you used the automatic deployment then you can skip these steps and directly go check the cloudformation stack has deployed
 ====
@@ -78,10 +76,7 @@ The upload command will:
 Before proceeding with the actual deployment, you can run `taskcat upload --dry-run` to safely preview the resources that will be provisioned. This command simulates the upload process without making any actual changes, helping you verify your configuration.
 
 image::../docs/deployment_guide/images/taskcat_dry_run.png[Taskcat dry-run example]
-====
 
-[NOTE]
-====
 In the above example you're deploying to the us-east-2 region, the S3 bucket name created is:
 `tcat-318317e4bf395d3fa89e1d675d64f43e-us-east-2`
 ====

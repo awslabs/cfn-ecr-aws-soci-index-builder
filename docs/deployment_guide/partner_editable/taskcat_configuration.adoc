@@ -31,7 +31,7 @@ tests:
 ----
 +
 
-[TIP]
+[IMPORTANT]
 ====
 The .taskcat.yml file must be updated with the correct regions where you want to deploy your stack. This is crucial as the template will be built specifically for those regions.
 ====
