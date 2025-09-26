@@ -6,7 +6,7 @@ toolchain go1.23.7
 
 require (
 	github.com/aws/aws-lambda-go v1.49.0
-	github.com/aws/aws-sdk-go-v2 v1.38.3
+	github.com/aws/aws-sdk-go-v2 v1.39.2
 	github.com/aws/aws-sdk-go-v2/config v1.31.2
 	github.com/aws/aws-sdk-go-v2/service/ecr v1.50.1
 	github.com/awslabs/soci-snapshotter v0.11.1
