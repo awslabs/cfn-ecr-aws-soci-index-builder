@@ -115,6 +115,8 @@ Resources:
             !Join [ ",", !Ref SociRepositoryImageTagFilters ]
           soci_index_generator_lambda_arn:
             !GetAtt SociIndexGeneratorLambda.Arn
+          soci_index_version:
+            !Ref SociIndexVersion
 
   ECRImageActionEventFilteringLambdaRole:
     Type: AWS::IAM::Role

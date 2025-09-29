@@ -27,6 +27,8 @@ def lambda_handler(event, context):
                 "repository-name": "repository_name",
                 "image-digest": "sha256:978f5f8049d3d0de30a7fc3892aafdfb323451bf682170d99154230ddefbe91e",
                 "action-type": "PUSH",
+                "artifact-media-type": "application/vnd.docker.container.image.v1+json",
+                "manifest-media-type": "application/vnd.docker.distribution.manifest.v2+json",
                 "image-tag": "hello-world"
             }
         }
@@ -39,6 +41,16 @@ def lambda_handler(event, context):
     repository_name = event['detail']['repository-name']
     image_digest = event['detail']['image-digest']
     image_tag = event['detail'].get('image-tag',"")
+    artifact_media_type = event['detail'].get('artifact-media-type',"")
+
+    try:
+        soci_index_version = os.environ['soci_index_version']
+    except:
+        soci_index_version = "V2"
+
+    # V2 index builder ignores image with no tag
+    if soci_index_version == "V2" and image_tag == "":
+        return log_and_generate_response(200, f'Skipping image "{repository_name} {artifact_media_type} {image_digest}" as it has no tag')
 
     # For SOCI V2, we create a new image index and tag it with a "-soci" suffix tag.
     # This repo tag generates a new PUSH event and will retrigger the soci index builder.
