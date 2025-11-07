@@ -16,4 +16,10 @@ COPY . .
 
 RUN make -f Makefile
 
+FROM alpine
+
+WORKDIR /build
+
+COPY --from=builder /build/soci_index_generator_lambda.zip /build/
+
 CMD mkdir -p /output/ && mv /build/soci_index_generator_lambda.zip /output/
