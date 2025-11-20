@@ -23,7 +23,7 @@ jobs:
         working_dir: ['functions/source/soci-index-generator-lambda']
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v${{ env.GOLANGCI_LINT_VERSION }}
@@ -35,7 +35,7 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
       
     - name: Set up Go
       uses: actions/setup-go@v5
