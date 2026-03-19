@@ -1,6 +1,6 @@
 module github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/aws/aws-lambda-go v1.53.0
@@ -11,7 +11,7 @@ require (
 	github.com/containerd/containerd v1.7.30
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/rs/zerolog v1.34.0
-	golang.org/x/sys v0.39.0
+	golang.org/x/sys v0.42.0
 	oras.land/oras-go/v2 v2.6.0
 )
 
