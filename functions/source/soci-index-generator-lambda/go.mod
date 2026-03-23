@@ -3,7 +3,7 @@ module github.com/aws-ia/cfn-aws-soci-index-builder/soci-index-generator-lambda
 go 1.24.0
 
 require (
-	github.com/aws/aws-lambda-go v1.53.0
+	github.com/aws/aws-lambda-go v1.54.0
 	github.com/aws/aws-sdk-go-v2 v1.41.4
 	github.com/aws/aws-sdk-go-v2/config v1.32.12
 	github.com/aws/aws-sdk-go-v2/service/ecr v1.56.1
