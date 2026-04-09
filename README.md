@@ -61,3 +61,10 @@ parameters:
    - Pulls the image from ECR
    - Generates SOCI index artifacts using the specified version (V1 or V2)
    - Pushes the SOCI index artifacts back to ECR
+
+## Simple manual deployment
+1. Run `./build-cfn.sh`. This will build all required artifacts into the directory `./upload`
+2. Upload the contents of `./upload` to an S3 bucket
+3. Copy the Object URL of the uploaded `SociIndexBuilder.yml` template
+4. Create a new CloudFormation Stack with the Object URL of the uploaded template
+5. Test: When the Stack is created, push an image to your Elastic Container Registry. The ECR Console page should list your SOCI index. You can also take a look at the created Cloud Watch log stream to verify.
