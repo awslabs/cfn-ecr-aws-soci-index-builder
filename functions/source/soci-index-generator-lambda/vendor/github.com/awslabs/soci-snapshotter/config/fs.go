@@ -65,6 +65,20 @@ type FSConfig struct {
 	BackgroundFetchConfig `toml:"background_fetch"`
 
 	ContentStoreConfig `toml:"content_store"`
+
+	PrefetchConfig `toml:"prefetch"`
+}
+
+// PrefetchConfig configures the prefetch feature for downloading specified files
+// before marking a layer download as complete.
+type PrefetchConfig struct {
+	// Enable controls whether the prefetch feature is enabled.
+	Enable bool `toml:"enable"`
+
+	// MaxConcurrency limits the maximum number of layers that can perform
+	// prefetch operations concurrently at the snapshotter level.
+	// 0 means no limit.
+	MaxConcurrency int64 `toml:"max_concurrency"`
 }
 
 // BlobConfig is config for layer blob management.
@@ -199,6 +213,11 @@ func parseFSConfig(cfg *Config) error {
 	if cfg.MaxConcurrency < 0 {
 		cfg.MaxConcurrency = 0
 	}
+	// If PrefetchConfig.MaxConcurrency is negative, disable concurrency limits entirely.
+	if cfg.PrefetchConfig.MaxConcurrency < 0 {
+		cfg.PrefetchConfig.MaxConcurrency = defaultPrefetchMaxConcurrency
+	}
+
 	// Parse nested fs configs
 	parsers := []configParser{parseFuseConfig, parseBackgroundFetchConfig, parseRetryableHTTPClientConfig, parseBlobConfig, parseContentStoreConfig}
 	for _, p := range parsers {

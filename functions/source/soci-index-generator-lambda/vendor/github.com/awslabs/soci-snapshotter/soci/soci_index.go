@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,10 +36,8 @@ import (
 	"github.com/awslabs/soci-snapshotter/ztoc"
 	"github.com/awslabs/soci-snapshotter/ztoc/compression"
 	"github.com/containerd/containerd/content"
-	"github.com/containerd/errdefs"
-	"oras.land/oras-go/v2/errdef"
-
 	"github.com/containerd/containerd/images"
+	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
@@ -55,10 +55,14 @@ const (
 	SociIndexArtifactTypeV2 = "application/vnd.amazon.soci.index.v2+json"
 	// SociLayerMediaType is the mediaType of ztoc
 	SociLayerMediaType = "application/octet-stream"
+	// SociPrefetchMediaType is the mediaType of prefetch artifact
+	SociPrefetchMediaType = "application/vnd.amazon.soci.prefetch.v1+json"
 	// IndexAnnotationImageLayerMediaType is the index annotation for image layer media type
 	IndexAnnotationImageLayerMediaType = "com.amazon.soci.image-layer-mediaType"
 	// IndexAnnotationImageLayerDigest is the index annotation for image layer digest
 	IndexAnnotationImageLayerDigest = "com.amazon.soci.image-layer-digest"
+	// IndexAnnotationSpanSize is the span size used to generate a soci artifact
+	IndexAnnotationSociSpanSize = "com.amazon.soci.span-size"
 	// IndexAnnotationBuildToolIdentifier is the index annotation for build tool identifier
 	IndexAnnotationBuildToolIdentifier = "com.amazon.soci.build-tool-identifier"
 	// IndexAnnotationDisableXAttrs is the index annotation if the layer has
@@ -291,6 +295,8 @@ type builderConfig struct {
 	buildToolIdentifier string
 	artifactsDb         *ArtifactsDb
 	optimizations       []Optimization
+	forceRecreateZtocs  bool
+	prefetchPaths       []string
 }
 
 func (b *builderConfig) hasOptimization(o Optimization) bool {
@@ -328,6 +334,13 @@ func ParseOptimization(s string) (Optimization, error) {
 // BuilderOption is a functional argument that affects a SOCI index builder
 // and all indexes built with that builder.
 type BuilderOption func(c *builderConfig) error
+
+func WithForceRecreateZtocs(forceRecreateZtocs bool) BuilderOption {
+	return func(c *builderConfig) error {
+		c.forceRecreateZtocs = forceRecreateZtocs
+		return nil
+	}
+}
 
 // WithSpanSize specifies span size.
 func WithSpanSize(spanSize int64) BuilderOption {
@@ -371,6 +384,13 @@ func WithBuildToolIdentifier(tool string) BuilderOption {
 func WithArtifactsDb(db *ArtifactsDb) BuilderOption {
 	return func(c *builderConfig) error {
 		c.artifactsDb = db
+		return nil
+	}
+}
+
+func WithPrefetchPaths(paths []string) BuilderOption {
+	return func(c *builderConfig) error {
+		c.prefetchPaths = paths
 		return nil
 	}
 }
@@ -486,11 +506,17 @@ func (b *IndexBuilder) Build(ctx context.Context, img images.Image, opts ...Buil
 
 	// Label zTOCs and push SOCI index
 	index.Desc, err = b.writeSociIndex(ctx, index, buildCfg.gcRoot)
-	if err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+	if err != nil && !store.IsErrAlreadyExists(err) {
 		return nil, err
 	}
 
 	return index, nil
+}
+
+// ztocWithLayer holds a built ZTOC along with its layer digest
+type ztocWithLayer struct {
+	ztoc        *ztoc.Ztoc
+	layerDigest string
 }
 
 // build attempts to create a zTOC in each layer and pushes the zTOC to the blob store.
@@ -498,6 +524,7 @@ func (b *IndexBuilder) Build(ctx context.Context, img images.Image, opts ...Buil
 // This should be done within a Batch and followed by writeSociIndex() to prevent garbage collection.
 func (b *IndexBuilder) build(ctx context.Context, img images.Image, buildCfg buildConfig) (*IndexWithMetadata, error) {
 	platformMatcher := platforms.OnlyStrict(buildCfg.platform)
+	enablePrefetch := len(b.config.prefetchPaths) > 0
 	// we get manifest descriptor before calling images.Manifest, since after calling
 	// images.Manifest, images.Children will error out when reading the manifest blob (this happens on containerd side)
 	imgManifestDesc, err := GetImageManifestDescriptor(ctx, b.contentStore, img.Target, platformMatcher)
@@ -515,6 +542,7 @@ func (b *IndexBuilder) build(ctx context.Context, img images.Image, buildCfg bui
 
 	// attempt to build a ztoc for each layer
 	sociLayersDesc := make([]*ocispec.Descriptor, len(manifest.Layers))
+	var builtZtocs []*ztocWithLayer // Track built ztocs for prefetch processing
 	errChan := make(chan error)
 	go func() {
 		var wg sync.WaitGroup
@@ -522,7 +550,7 @@ func (b *IndexBuilder) build(ctx context.Context, img images.Image, buildCfg bui
 			wg.Add(1)
 			go func(i int, l ocispec.Descriptor) {
 				defer wg.Done()
-				desc, err := b.buildSociLayer(ctx, l)
+				desc, toc, err := b.buildSociLayer(ctx, l)
 				if err != nil {
 					if err != errUnsupportedLayerFormat {
 						errChan <- err
@@ -533,6 +561,12 @@ func (b *IndexBuilder) build(ctx context.Context, img images.Image, buildCfg bui
 					// index layers must be in some deterministic order
 					// actual layer order used for historic consistency
 					sociLayersDesc[i] = desc
+					if toc != nil && enablePrefetch {
+						builtZtocs = append(builtZtocs, &ztocWithLayer{
+							ztoc:        toc,
+							layerDigest: l.Digest.String(),
+						})
+					}
 				}
 			}(i, l)
 		}
@@ -554,8 +588,18 @@ func (b *IndexBuilder) build(ctx context.Context, img images.Image, buildCfg bui
 		return nil, errWrap
 	}
 
-	ztocsDesc := make([]ocispec.Descriptor, 0, len(sociLayersDesc))
+	var prefetchDescs []*ocispec.Descriptor
+	if len(b.config.prefetchPaths) > 0 && len(builtZtocs) > 0 {
+		prefetchDescs = b.buildPrefetchLayer(ctx, builtZtocs, manifest.Layers)
+	}
+
+	ztocsDesc := make([]ocispec.Descriptor, 0, len(sociLayersDesc)+len(prefetchDescs))
 	for _, desc := range sociLayersDesc {
+		if desc != nil {
+			ztocsDesc = append(ztocsDesc, *desc)
+		}
+	}
+	for _, desc := range prefetchDescs {
 		if desc != nil {
 			ztocsDesc = append(ztocsDesc, *desc)
 		}
@@ -589,22 +633,27 @@ func (b *IndexBuilder) build(ctx context.Context, img images.Image, buildCfg bui
 	}, nil
 }
 
-// buildSociLayer builds a ztoc for an image layer (`desc`) and returns ztoc descriptor.
+// buildSociLayer builds a ztoc for an image layer (`desc`) and returns ztoc descriptor and the ztoc itself.
 // It may skip building ztoc (e.g., if layer size < `minLayerSize`) and return nil.
 // This should be done within a Batch and followed by Label calls to prevent garbage collection.
-func (b *IndexBuilder) buildSociLayer(ctx context.Context, desc ocispec.Descriptor) (*ocispec.Descriptor, error) {
-	if !images.IsLayerType(desc.MediaType) {
-		return nil, errNotLayerType
+func (b *IndexBuilder) buildSociLayer(ctx context.Context, desc ocispec.Descriptor) (*ocispec.Descriptor, *ztoc.Ztoc, error) {
+	if desc.MediaType == SociPrefetchMediaType {
+		return nil, nil, nil
 	}
+
+	if !images.IsLayerType(desc.MediaType) {
+		return nil, nil, errNotLayerType
+	}
+
 	// check if we need to skip building the zTOC
 	if skip, reason := skipBuildingZtoc(desc, b.config); skip {
 		fmt.Printf("ztoc skipped - layer %s (%s) %s\n", desc.Digest, desc.MediaType, reason)
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	compressionAlgo, err := images.DiffCompression(ctx, desc.MediaType)
 	if err != nil {
-		return nil, fmt.Errorf("could not determine layer compression: %w", err)
+		return nil, nil, fmt.Errorf("could not determine layer compression: %w", err)
 	}
 
 	if compressionAlgo == "" {
@@ -618,42 +667,66 @@ func (b *IndexBuilder) buildSociLayer(ctx context.Context, desc ocispec.Descript
 	if !b.ztocBuilder.CheckCompressionAlgorithm(compressionAlgo) {
 		fmt.Printf("ztoc skipped - layer %s (%s) is compressed in an unsupported format. expect: [tar, gzip, unknown] but got %q\n",
 			desc.Digest, desc.MediaType, compressionAlgo)
-		return nil, errUnsupportedLayerFormat
+		return nil, nil, errUnsupportedLayerFormat
+	}
+
+	existingZtoc := b.getExistingZtocForLayer(desc)
+	if existingZtoc != nil {
+		var shouldOverwrite bool
+		reader, err := b.blobStore.Fetch(ctx, *existingZtoc)
+		if err != nil {
+			if errors.Is(err, errdefs.ErrNotFound) {
+				log.G(ctx).Debug("a ztoc entry was found in the artifact store but not in the content store, overwriting existing ztoc")
+				shouldOverwrite = true
+			} else {
+				return nil, nil, fmt.Errorf("failed to fetch existing ztoc: %w", err)
+			}
+		}
+		if !shouldOverwrite {
+			toc, err := ztoc.Unmarshal(reader)
+			if err != nil {
+				return nil, nil, fmt.Errorf("cannot unmarshal existing ztoc: %w", err)
+			}
+
+			fmt.Printf("layer %s -> ztoc %s (already exists)\n", desc.Digest, existingZtoc.Digest)
+			b.addSociLayerAnnotations(&desc, existingZtoc, toc)
+			return existingZtoc, toc, nil
+		}
 	}
 
 	ra, err := b.contentStore.ReaderAt(ctx, desc)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer ra.Close()
 	sr := io.NewSectionReader(ra, 0, desc.Size)
 
 	tmpFile, err := os.CreateTemp("", "tmp.*")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer os.Remove(tmpFile.Name())
 	n, err := io.Copy(tmpFile, sr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if n != desc.Size {
-		return nil, errors.New("the size of the temp file doesn't match that of the layer")
+		return nil, nil, errors.New("the size of the temp file doesn't match that of the layer")
 	}
 
 	toc, err := b.ztocBuilder.BuildZtoc(tmpFile.Name(), b.config.spanSize, ztoc.WithCompression(compressionAlgo))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	ztocReader, ztocDesc, err := ztoc.Marshal(toc)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	err = b.blobStore.Push(ctx, ztocDesc, ztocReader)
-	if err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
-		return nil, fmt.Errorf("cannot push ztoc to local store: %w", err)
+	if err != nil && !store.IsErrAlreadyExists(err) {
+		return nil, nil, fmt.Errorf("cannot push ztoc to local store: %w", err)
 	}
 
 	// write the artifact entry for soci layer
@@ -666,21 +739,201 @@ func (b *IndexBuilder) buildSociLayer(ctx context.Context, desc ocispec.Descript
 		Location:       desc.Digest.String(),
 		MediaType:      SociLayerMediaType,
 		CreatedAt:      time.Now(),
+		SpanSize:       b.config.spanSize,
+	}
+	err = b.config.artifactsDb.WriteArtifactEntry(entry)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	fmt.Printf("layer %s -> ztoc %s\n", desc.Digest, ztocDesc.Digest)
+	b.addSociLayerAnnotations(&desc, &ztocDesc, toc)
+	return &ztocDesc, toc, nil
+}
+
+// buildPrefetchLayer builds and stores prefetch artifacts for layers that contain prefetch files
+func (b *IndexBuilder) buildPrefetchLayer(ctx context.Context, builtZtocs []*ztocWithLayer, layers []ocispec.Descriptor) []*ocispec.Descriptor {
+	if len(b.config.prefetchPaths) == 0 {
+		return nil
+	}
+
+	layerZtocMap := make(map[string]*ztocWithLayer, len(builtZtocs))
+	for _, zwl := range builtZtocs {
+		layerZtocMap[zwl.layerDigest] = zwl
+	}
+
+	layerPrefetchSpansMap := make(map[string][]PrefetchSpan)
+	for _, prefetchPath := range b.config.prefetchPaths {
+		found := false
+	PrefetchPathLoop:
+		for i := len(layers) - 1; i >= 0; i-- {
+			layer := layers[i]
+			layerDigest := layer.Digest.String()
+			zwl, ok := layerZtocMap[layerDigest]
+			if !ok {
+				continue
+			}
+
+			for _, metadata := range zwl.ztoc.TOC.FileMetadata {
+				if filepath.Clean(metadata.Name) == prefetchPath {
+					gz, err := zwl.ztoc.Zinfo()
+					if err != nil {
+						log.G(ctx).WithError(err).Warnf("failed to get zinfo for layer %s", layerDigest)
+						break PrefetchPathLoop
+					}
+
+					fileOffset := int64(metadata.UncompressedOffset)
+					fileSize := int64(metadata.UncompressedSize)
+					startSpan := gz.UncompressedOffsetToSpanID(compression.Offset(fileOffset))
+					endSpan := gz.UncompressedOffsetToSpanID(compression.Offset(fileOffset + fileSize))
+					if endSpan < startSpan {
+						endSpan = startSpan
+					}
+					gz.Close()
+
+					layerPrefetchSpansMap[layerDigest] = append(layerPrefetchSpansMap[layerDigest], PrefetchSpan{
+						StartSpan: startSpan,
+						EndSpan:   endSpan,
+					})
+					found = true
+					break PrefetchPathLoop
+				}
+			}
+		}
+		if !found {
+			log.G(ctx).Warnf("prefetch file %s not found in any layer", prefetchPath)
+		}
+	}
+
+	if len(layerPrefetchSpansMap) == 0 {
+		return nil
+	}
+
+	prefetchDescs := make([]*ocispec.Descriptor, 0, len(layerPrefetchSpansMap))
+	for _, layer := range layers {
+		layerDigest := layer.Digest.String()
+		prefetchSpans, ok := layerPrefetchSpansMap[layerDigest]
+		if !ok || len(prefetchSpans) == 0 {
+			continue
+		}
+
+		prefetchDesc, err := b.storePrefetchLayer(ctx, layerDigest, prefetchSpans)
+		if err != nil {
+			log.G(ctx).WithError(err).Warnf("failed to store prefetch artifact for layer %s", layerDigest)
+		} else if prefetchDesc != nil {
+			prefetchDescs = append(prefetchDescs, prefetchDesc)
+		}
+	}
+
+	return prefetchDescs
+}
+
+func (b *IndexBuilder) addSociLayerAnnotations(layerDesc *ocispec.Descriptor, ztocDesc *ocispec.Descriptor, toc *ztoc.Ztoc) {
+	ztocDesc.MediaType = SociLayerMediaType
+	ztocDesc.Annotations = map[string]string{
+		IndexAnnotationImageLayerMediaType: layerDesc.MediaType,
+		IndexAnnotationImageLayerDigest:    layerDesc.Digest.String(),
+		IndexAnnotationSociSpanSize:        strconv.FormatInt(b.config.spanSize, 10),
+	}
+	b.maybeAddDisableXattrAnnotation(ztocDesc, toc)
+}
+
+func normalizePrefetchSpans(spans []PrefetchSpan) []PrefetchSpan {
+	if len(spans) == 0 {
+		return nil
+	}
+
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].StartSpan == spans[j].StartSpan {
+			return spans[i].EndSpan < spans[j].EndSpan
+		}
+		return spans[i].StartSpan < spans[j].StartSpan
+	})
+
+	merged := make([]PrefetchSpan, 0, len(spans))
+	current := spans[0]
+	for i := 1; i < len(spans); i++ {
+		s := spans[i]
+		if s.StartSpan <= current.EndSpan+1 {
+			if s.EndSpan > current.EndSpan {
+				current.EndSpan = s.EndSpan
+			}
+		} else {
+			merged = append(merged, current)
+			current = s
+		}
+	}
+	merged = append(merged, current)
+
+	return merged
+}
+
+func (b *IndexBuilder) storePrefetchLayer(ctx context.Context, layerDigest string, prefetchSpans []PrefetchSpan) (*ocispec.Descriptor, error) {
+	artifact := NewPrefetchArtifact()
+
+	normalized := normalizePrefetchSpans(prefetchSpans)
+	for _, span := range normalized {
+		artifact.AddPrefetchSpan(span)
+	}
+
+	if artifact.IsEmpty() {
+		return nil, nil
+	}
+
+	reader, desc, err := MarshalPrefetchArtifact(artifact)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal prefetch artifact: %w", err)
+	}
+
+	if desc.Annotations == nil {
+		desc.Annotations = make(map[string]string)
+	}
+	desc.Annotations[IndexAnnotationImageLayerDigest] = layerDigest
+
+	err = b.blobStore.Push(ctx, desc, reader)
+	if err != nil && !store.IsErrAlreadyExists(err) {
+		return nil, fmt.Errorf("cannot push prefetch artifact to local store: %w", err)
+	}
+
+	entry := &ArtifactEntry{
+		Size:           desc.Size,
+		Digest:         desc.Digest.String(),
+		OriginalDigest: layerDigest,
+		Type:           ArtifactEntryTypePrefetch,
+		MediaType:      SociPrefetchMediaType,
+		CreatedAt:      time.Now(),
 	}
 	err = b.config.artifactsDb.WriteArtifactEntry(entry)
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Printf("layer %s -> ztoc %s\n", desc.Digest, ztocDesc.Digest)
+	fmt.Printf("Created prefetch artifact for layer %s: %s\n", layerDigest, desc.Digest)
+	return &desc, nil
+}
 
-	ztocDesc.MediaType = SociLayerMediaType
-	ztocDesc.Annotations = map[string]string{
-		IndexAnnotationImageLayerMediaType: desc.MediaType,
-		IndexAnnotationImageLayerDigest:    desc.Digest.String(),
+// getExistingZtocForLayer returns a ztoc descriptor for the provided layer if an entry corresponding to the
+// layer already exists in the artifact store.
+func (b *IndexBuilder) getExistingZtocForLayer(layerDesc ocispec.Descriptor) *ocispec.Descriptor {
+	if b.config.forceRecreateZtocs || b.config.artifactsDb == nil {
+		return nil
 	}
-	b.maybeAddDisableXattrAnnotation(&ztocDesc, toc)
-	return &ztocDesc, err
+	var existingZtoc *ocispec.Descriptor
+	b.config.artifactsDb.Walk(func(ae *ArtifactEntry) error {
+		if ae.Type == ArtifactEntryTypeLayer &&
+			ae.OriginalDigest == layerDesc.Digest.String() &&
+			ae.SpanSize == b.config.spanSize {
+			existingZtoc = &ocispec.Descriptor{
+				Digest: digest.Digest(ae.Digest),
+				Size:   ae.Size,
+			}
+			// intentionally returning an error here so that "cfg.artifactsDb.Walk" exits early
+			// when a match is found in the artifacts db
+			return fmt.Errorf("found existing ztoc for layer %s", layerDesc.Digest)
+		}
+		return nil
+	})
+	return existingZtoc
 }
 
 // NewIndex returns a new index.
@@ -754,7 +1007,7 @@ func (b *IndexBuilder) writeSociIndex(ctx context.Context, indexWithMetadata *In
 	// registry later.
 	if indexWithMetadata.Index.MediaType == ocispec.MediaTypeImageManifest {
 		err = b.blobStore.Push(ctx, indexWithMetadata.Index.Config, bytes.NewReader(defaultConfigContent))
-		if err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+		if err != nil && !store.IsErrAlreadyExists(err) {
 			return ocispec.Descriptor{}, fmt.Errorf("error creating OCI 1.0 empty config: %w", err)
 		}
 	}
@@ -769,7 +1022,7 @@ func (b *IndexBuilder) writeSociIndex(ctx context.Context, indexWithMetadata *In
 	}
 
 	err = b.blobStore.Push(ctx, desc, bytes.NewReader(manifest))
-	if err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+	if err != nil && !store.IsErrAlreadyExists(err) {
 		return ocispec.Descriptor{}, fmt.Errorf("cannot write SOCI index to local store: %w", err)
 	}
 
