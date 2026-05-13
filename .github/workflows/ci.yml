@@ -13,7 +13,7 @@ on:
       - '.github/workflows/ci.yml'
 
 env:
-  GO_VERSION: '1.24'
+  GO_VERSION: '1.25'
   GOLANGCI_LINT_VERSION: '2.1.6'
 
 jobs:
