@@ -103,7 +103,7 @@ Resources:
         Given an Amazon ECR image action event from EventBridge, matches event detail.repository-name 
         and detail.image-tag against one or more known patterns and invokes Executor Lambda with the same event on a match.
       Handler: ecr_image_action_event_filtering_lambda_function.lambda_handler
-      Runtime: python3.10
+      Runtime: python3.13
       Role: !GetAtt ECRImageActionEventFilteringLambdaRole.Arn
       Timeout: 900
       Code:
@@ -252,7 +252,7 @@ Resources:
     Properties:
       FunctionName: RepositoryNameParsingLambda
       Handler: index.handler
-      Runtime: python3.10
+      Runtime: python3.13
       Role: !GetAtt RepositoryNameParsingLambdaRole.Arn
       Code:
         ZipFile: !Sub |
