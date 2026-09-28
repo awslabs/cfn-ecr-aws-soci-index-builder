@@ -10,7 +10,7 @@ require (
 	github.com/awslabs/soci-snapshotter v0.11.1
 	github.com/containerd/containerd v1.7.30
 	github.com/opencontainers/image-spec v1.1.1
-	github.com/rs/zerolog v1.34.0
+	github.com/rs/zerolog v1.35.1
 	golang.org/x/sys v0.39.0
 	oras.land/oras-go/v2 v2.6.0
 )
@@ -55,8 +55,8 @@ require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.19 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/sequential v0.5.0 // indirect
