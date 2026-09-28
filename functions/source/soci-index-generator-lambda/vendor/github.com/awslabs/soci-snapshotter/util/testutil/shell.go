@@ -47,6 +47,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -65,87 +66,128 @@ const (
 
 // TestingReporter is an implementation of dockershell.Reporter backed by testing.T and TestingL.
 type TestingReporter struct {
+	w *BufferedWriter
 	t *testing.T
 }
 
 // NewTestingReporter returns a new TestingReporter instance for the specified testing.T.
 func NewTestingReporter(t *testing.T) *TestingReporter {
-	return &TestingReporter{t}
+	w := NewBufferedWriter(NewTestWriter(t))
+	t.Cleanup(func() {
+		if t.Failed() {
+			w.Flush()
+		}
+	})
+	return &TestingReporter{w, t}
 }
 
-// Errorf prints the provided message to TestingL and stops the test using testing.T.Fatalf.
+// Errorf prints the provided message to the test output and stops the test using testing.T.Fatalf.
 func (r *TestingReporter) Errorf(format string, v ...interface{}) {
-	msg := fmt.Sprintf(format, v...)
-	_, file, lineNum, ok := runtime.Caller(2)
-	if ok {
-		r.t.Fatalf("%s:%d: %s", file, lineNum, msg)
-	} else {
-		r.t.Fatalf(format, v...)
-	}
+	r.Logf(format, v...)
+	r.t.FailNow()
 }
 
-// Logf prints the provided message to TestingL testing.T.
+// Logf prints the provided message to the test output if the test fails.
 func (r *TestingReporter) Logf(format string, v ...interface{}) {
 	msg := fmt.Sprintf(format, v...)
 	_, file, lineNum, ok := runtime.Caller(2)
 	if ok {
-		r.t.Logf("%s:%d: %s", file, lineNum, msg)
-	} else {
-		r.t.Logf(format, v...)
+		msg = fmt.Sprintf("%s:%d: %s", file, lineNum, msg)
 	}
+	io.Copy(r.w, strings.NewReader(msg))
 }
 
-// Stdout returns the writer to TestingL as stdout. This enables to print command logs realtime.
+// Stdout returns the underlying writer as stdout. This enables to print command logs realtime.
 func (r *TestingReporter) Stdout() io.Writer {
-	return TestingL.Writer()
+	return r.w
 }
 
-// Stderr returns the writer to TestingL as stderr. This enables to print command logs realtime.
+// Stderr returns the underlying writer as stderr. This enables to print command logs realtime.
 func (r *TestingReporter) Stderr() io.Writer {
-	return TestingL.Writer()
+	return r.w
 }
 
 // LogMonitor manages a list of functions that should scan lines coming from stdout and stderr Readers
 type LogMonitor struct {
-	monitorFuncs map[string]func(string)
+	r      shell.Reporter
+	stdout io.Reader
+	stderr io.Reader
+
+	monitorFuncs []func(string)
+	started      bool
+	cleaning     bool
+	finished     chan bool
+	wg           *sync.WaitGroup
 }
 
 // NewLogMonitor creates a LogMonitor for a given pair of stdout and stderr Readers
 func NewLogMonitor(r shell.Reporter, stdout, stderr io.Reader) *LogMonitor {
 	m := &LogMonitor{}
-	m.monitorFuncs = make(map[string]func(string))
-	go m.scanLog(io.TeeReader(stdout, r.Stdout()))
-	go m.scanLog(io.TeeReader(stderr, r.Stderr()))
+	m.r = r
+	m.stdout = stdout
+	m.stderr = stderr
+
+	m.monitorFuncs = []func(string){}
+	m.finished = make(chan bool, 1)
+	m.wg = &sync.WaitGroup{}
 	return m
 }
 
-// Add registers a new log monitor function
-func (m *LogMonitor) Add(name string, monitorFunc func(string)) error {
-	if _, ok := m.monitorFuncs[name]; ok {
-		return fmt.Errorf("attempted to add log monitor with already existing name: %s", name)
+func (m *LogMonitor) Start() error {
+	if m.started {
+		return errors.New("LogMonitor already started")
 	}
-	m.monitorFuncs[name] = monitorFunc
+	m.started = true
+	m.scanLog(io.TeeReader(m.stdout, m.r.Stdout()), "stdout")
+	m.scanLog(io.TeeReader(m.stderr, m.r.Stderr()), "stderr")
 	return nil
 }
 
-// Remove unregisters a log monitor function
-func (m *LogMonitor) Remove(name string) error {
-	if _, ok := m.monitorFuncs[name]; ok {
-		delete(m.monitorFuncs, name)
-		return nil
+// Add registers a new log monitor function
+func (m *LogMonitor) Add(monitorFunc func(string)) error {
+	if m.started {
+		return errors.New("cannot add logMonitor functions after starting")
 	}
-	return fmt.Errorf("attempted to remove nonexistent log monitor: %s", name)
+	m.monitorFuncs = append(m.monitorFuncs, monitorFunc)
+	return nil
+}
+
+// Cleanup ensures all LogMonitors have finished running
+func (m *LogMonitor) Cleanup(t *testing.T) {
+	if !m.started {
+		t.Fatal("cleanup called before starting LogMonitor")
+	}
+	if m.cleaning {
+		t.Fatal("cannot call Cleanup multiple times")
+	}
+	m.cleaning = true
+	close(m.finished)
+
+	// Split this into a goroutine since we don't know when the pipes close.
+	go func() {
+		m.wg.Wait()
+		m.monitorFuncs = nil
+	}()
 }
 
 // scanLog calls each registered log monitor function for each new line of the Reader
-func (m *LogMonitor) scanLog(inputR io.Reader) {
-	scanner := bufio.NewScanner(inputR)
-	for scanner.Scan() {
-		rawL := scanner.Text()
-		for _, monitorFunc := range m.monitorFuncs {
-			monitorFunc(rawL)
+func (m *LogMonitor) scanLog(inputR io.Reader, s string) {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		scanner := bufio.NewScanner(inputR)
+		for scanner.Scan() {
+			select {
+			case <-m.finished:
+				return
+			default:
+				rawL := scanner.Text()
+				for _, monitorFunc := range m.monitorFuncs {
+					monitorFunc(rawL)
+				}
+			}
 		}
-	}
+	}()
 }
 
 // RemoteSnapshotMonitor scans log of soci snapshotter and provides the way to check
@@ -156,12 +198,9 @@ type RemoteSnapshotMonitor struct {
 	deferred uint64
 }
 
-// NewRemoteSnapshotMonitor creates a new instance of RemoteSnapshotMonitor and registers it
-// with the LogMonitor
-func NewRemoteSnapshotMonitor(m *LogMonitor) (*RemoteSnapshotMonitor, func()) {
-	rsm := &RemoteSnapshotMonitor{}
-	m.Add("remote snapshot", rsm.MonitorFunc)
-	return rsm, func() { m.Remove("remote snapshot") }
+// NewRemoteSnapshotMonitor creates a new instance of RemoteSnapshotMonitor
+func NewRemoteSnapshotMonitor() *RemoteSnapshotMonitor {
+	return &RemoteSnapshotMonitor{}
 }
 
 type SnapshotPreparedLogLine struct {
@@ -240,28 +279,17 @@ func (m *RemoteSnapshotMonitor) checkExpectedMounts(t *testing.T, result string,
 	t.Logf("all layers have been reported as %s snapshots %v", name, result)
 }
 
-const indexDigestMonitorID = "index-digest-monitor"
-
 // IndexDigestMonitor scans the SOCI logs looking for a log that indicates
 // which SOCI index digest was used to pull an image.
 type IndexDigestMonitor struct {
 	IndexDigest string
-	m           *LogMonitor
 }
 
-func NewIndexDigestMonitor(m *LogMonitor) *IndexDigestMonitor {
-	idm := IndexDigestMonitor{
-		m: m,
-	}
-	m.Add(indexDigestMonitorID, idm.process)
-	return &idm
+func NewIndexDigestMonitor() *IndexDigestMonitor {
+	return &IndexDigestMonitor{}
 }
 
-func (idm *IndexDigestMonitor) Close() {
-	idm.m.Remove(indexDigestMonitorID)
-}
-
-func (idm *IndexDigestMonitor) process(s string) {
+func (idm *IndexDigestMonitor) MonitorFunc(s string) {
 	structuredLog := make(map[string]string)
 	err := json.Unmarshal([]byte(s), &structuredLog)
 	if err != nil {
@@ -273,10 +301,7 @@ func (idm *IndexDigestMonitor) process(s string) {
 }
 
 // LogConfirmStartup registers a LogMonitor function to scan until startup succeeds or fails
-func LogConfirmStartup(m *LogMonitor) error {
-	errs := make(chan error, 1)
-	m.Add("startup", monitorStartup(errs))
-	defer m.Remove("startup")
+func LogConfirmStartup(errs chan error) error {
 	select {
 	case err := <-errs:
 		if err != nil {
@@ -294,24 +319,30 @@ type LevelLogLine struct {
 }
 
 // monitorStartup creates a LogMonitor function to pass success or failure back through the given channel
-func monitorStartup(errs chan error) func(string) {
+func MonitorStartup() (func(string), chan error) {
+	errs := make(chan error, 1)
+	found := false
 	return func(rawL string) {
-		if i := strings.Index(rawL, "{"); i > 0 {
-			rawL = rawL[i:] // trim garbage chars; expects "{...}"-styled JSON log
-		}
-		var logline LevelLogLine
-		if err := json.Unmarshal([]byte(rawL), &logline); err == nil {
-			if logline.Level == "fatal" {
-				errs <- errors.New("fatal snapshotter log entry encountered, snapshotter failed to start")
-				return
+		if !found {
+			if i := strings.Index(rawL, "{"); i > 0 {
+				rawL = rawL[i:] // trim garbage chars; expects "{...}"-styled JSON log
 			}
-			// Looking for "soci-snapshotter-grpc successfully started"
-			if strings.Contains(logline.Msg, "successfully") {
-				errs <- nil
-				return
+			var logline LevelLogLine
+			if err := json.Unmarshal([]byte(rawL), &logline); err == nil {
+				if logline.Level == "fatal" {
+					errs <- errors.New("fatal snapshotter log entry encountered, snapshotter failed to start")
+					found = true
+					return
+				}
+				// Looking for "soci-snapshotter-grpc successfully started"
+				if strings.Contains(logline.Msg, "successfully") {
+					errs <- nil
+					found = true
+					return
+				}
 			}
 		}
-	}
+	}, errs
 }
 
 // TempDir creates a temporary directory in the specified execution environment.

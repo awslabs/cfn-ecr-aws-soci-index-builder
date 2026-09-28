@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content/oci"
+	"oras.land/oras-go/v2/errdef"
 )
 
 // BasicStore describes the functionality common to oras-go oci.Store, oras-go memory.Store, and containerd ContentStore.
@@ -70,7 +72,7 @@ const (
 	DefaultContainerdContentStorePath = "/var/lib/containerd/io.containerd.content.v1.content"
 
 	// Default path to soci content addressable storage
-	DefaultSociContentStorePath = "/var/lib/soci-snapshotter-grpc/content"
+	DefaultSociContentStorePath = config.DefaultSociSnapshotterRootPath + "content"
 )
 
 func ErrUnknownContentStoreType(contentStoreType ContentStoreType) error {
@@ -80,6 +82,12 @@ func ErrUnknownContentStoreType(contentStoreType ContentStoreType) error {
 
 func ErrCouldNotCreateClient(address string) error {
 	return fmt.Errorf("could not create containerd client at %s", address)
+}
+
+// IsErrAlreadyExists is a store-type-agnostic way to check if the content exists in the store.
+func IsErrAlreadyExists(err error) bool {
+	return errors.Is(err, errdefs.ErrAlreadyExists) || // containerd error
+		errors.Is(err, errdef.ErrAlreadyExists) // ORAS error
 }
 
 // This struct allows SOCI to create a connection to the containerd on-demand
@@ -115,7 +123,8 @@ func (c *ContainerdClient) Client() (*containerd.Client, error) {
 
 type ContentStoreConfig struct {
 	config.ContentStoreConfig
-	ctdClient *ContainerdClient
+	ctdClient       *ContainerdClient
+	SnapshotterRoot string
 }
 
 func NewStoreConfig(opts ...Option) ContentStoreConfig {
@@ -146,6 +155,12 @@ func WithContainerdAddress(address string) Option {
 	}
 }
 
+func WithSnapshotterRoot(root string) Option {
+	return func(sc *ContentStoreConfig) {
+		sc.SnapshotterRoot = root
+	}
+}
+
 func WithClient(client *ContainerdClient) Option {
 	return func(sc *ContentStoreConfig) {
 		sc.ctdClient = client
@@ -166,7 +181,7 @@ func CanonicalizeContentStoreType(contentStoreType ContentStoreType) (ContentSto
 }
 
 // GetContentStorePath returns the top level directory for the content store.
-func GetContentStorePath(contentStoreType ContentStoreType) (string, error) {
+func GetContentStorePath(contentStoreType ContentStoreType, root string) (string, error) {
 	contentStoreType, err := CanonicalizeContentStoreType(contentStoreType)
 	if err != nil {
 		return "", err
@@ -175,7 +190,10 @@ func GetContentStorePath(contentStoreType ContentStoreType) (string, error) {
 	case ContainerdContentStoreType:
 		return DefaultContainerdContentStorePath, nil
 	case SociContentStoreType:
-		return DefaultSociContentStorePath, nil
+		if root == "" {
+			return DefaultSociContentStorePath, nil
+		}
+		return filepath.Join(root, "content"), nil
 	}
 	return "", errors.New("unexpectedly reached end of GetContentStorePath")
 }
@@ -195,7 +213,11 @@ func NewContentStore(opts ...Option) (Store, error) {
 	case ContainerdContentStoreType:
 		return NewContainerdStore(storeConfig)
 	case SociContentStoreType:
-		return NewSociStore()
+		path, err := GetContentStorePath(SociContentStoreType, storeConfig.SnapshotterRoot)
+		if err != nil {
+			return nil, err
+		}
+		return NewSociStore(path)
 	}
 	return nil, errors.New("unexpectedly reached end of NewContentStore")
 }
@@ -209,8 +231,11 @@ type SociStore struct {
 var _ Store = (*SociStore)(nil)
 
 // NewSociStore creates a sociStore.
-func NewSociStore() (*SociStore, error) {
-	store, err := oci.New(DefaultSociContentStorePath)
+func NewSociStore(path string) (*SociStore, error) {
+	if path == "" {
+		path = DefaultSociContentStorePath
+	}
+	store, err := oci.New(path)
 	return &SociStore{store}, err
 }
 
@@ -292,8 +317,8 @@ func (s *ContainerdStore) Push(ctx context.Context, expected ocispec.Descriptor,
 		return err
 	}
 	if exists {
-		// To be consistent with content.Copy, return nil if content already exists.
-		return nil
+		// To be consistent with writer.Commit, return ErrAlreadyExists if content already exists.
+		return errdefs.ErrAlreadyExists
 	}
 
 	client, err := s.client()
